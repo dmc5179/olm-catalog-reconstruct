@@ -1,0 +1,16 @@
+kind: ImageSetConfiguration
+apiVersion: mirror.openshift.io/v2alpha1
+mirror:
+  operators:
+  - catalog: registry.redhat.io/redhat/redhat-operator-index@sha256:437b0fee59148a1f7930f1e75f2f666dc23e3954aec5dd323840c3188ee87f3a
+    packages:
+    - name: cincinnati-operator
+      channels:
+      - name: v1
+        minVersion: 5.0.2
+    - name: servicemeshoperator3
+      defaultChannel: stable-3.3
+      channels:
+      - name: stable-3.3
+        minVersion: 3.3.3
+    - name: web-terminal

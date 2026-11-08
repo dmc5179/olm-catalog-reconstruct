@@ -1,0 +1,28 @@
+kind: ImageSetConfiguration
+apiVersion: mirror.openshift.io/v2alpha1
+mirror:
+  operators:
+  - catalog: registry.redhat.io/redhat/redhat-operator-index@sha256:437b0fee59148a1f7930f1e75f2f666dc23e3954aec5dd323840c3188ee87f3a
+    packages:
+    - name: cincinnati-operator        # mid-range, head excluded
+      channels:
+      - name: v1
+        minVersion: 5.0.0
+        maxVersion: 5.0.2
+    - name: servicemeshoperator3       # two non-default channels + default override
+      defaultChannel: stable-3.3
+      channels:
+      - name: stable-3.2
+        minVersion: 3.2.5
+      - name: stable-3.3
+    - name: kubevirt-hyperconverged    # package-level range, applies to every channel
+      minVersion: 4.20.30
+    - name: web-terminal               # exact version (min == max)
+      channels:
+      - name: fast
+        minVersion: 1.12.1
+        maxVersion: 1.12.1
+    - name: rhacs-operator             # max only
+      channels:
+      - name: stable
+        maxVersion: 4.0.3
