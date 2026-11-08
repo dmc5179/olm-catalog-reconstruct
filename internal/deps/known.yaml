@@ -1,0 +1,20 @@
+# Operator dependencies that are NOT declared in catalog metadata
+# (no olm.package.required / olm.gvk.required / olm.constraint), usually because
+# the operator creates the dependent Subscription itself at runtime.
+#
+# Each entry must cite where the dependency is documented.
+#
+# channel:
+#   same    - use the dependent package's channel with the same name as the
+#             requiring bundle's channel (falls back to the default channel)
+#   default - use the dependent package's default channel
+- package: odf-operator
+  requires:
+  - package: odf-dependencies
+    channel: same
+    source: "KCS 7144044: odf-operator fails with 'failed getting odf-deps csv' when odf-dependencies is not mirrored (ODF 4.20)"
+- package: advanced-cluster-management
+  requires:
+  - package: multicluster-engine
+    channel: default
+    source: "advanced-cluster-management CSV description: 'include both the advanced-cluster-management and multicluster-engine packages in your mirrored catalog'"

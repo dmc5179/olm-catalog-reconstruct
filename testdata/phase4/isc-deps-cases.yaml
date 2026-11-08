@@ -1,0 +1,14 @@
+kind: ImageSetConfiguration
+apiVersion: mirror.openshift.io/v2alpha1
+mirror:
+  operators:
+  - catalog: registry.redhat.io/redhat/redhat-operator-index@sha256:437b0fee59148a1f7930f1e75f2f666dc23e3954aec5dd323840c3188ee87f3a
+    packages:
+    - name: mtc-operator                 # olm.package.required redhat-oadp-operator with a version range
+      channels:
+      - name: release-v1.8
+        minVersion: 1.8.0
+    - name: mta-operator                 # current bundles declare nothing (old script reported rhsso)
+    - name: service-telemetry-operator   # olm.constraint all(...) rules
+    - name: advanced-cluster-management  # undeclared runtime dependency on multicluster-engine
+    - name: web-terminal                 # olm.gvk.required provided by devworkspace-operator
