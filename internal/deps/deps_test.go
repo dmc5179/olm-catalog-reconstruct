@@ -227,3 +227,64 @@ func TestOldBundleWithoutSkipperIsStillAProblem(t *testing.T) {
 		t.Fatalf("expected an unresolved finding for app.v1.0.0, got %+v", r.Findings)
 	}
 }
+
+// multi has two channels: stable (default, head needs "shared") and old (head
+// needs "shared" and "legacy").
+const multiChannel = `{"schema":"olm.package","name":"multi","defaultChannel":"stable"}
+{"schema":"olm.channel","package":"multi","name":"stable","entries":[{"name":"multi.v2.0.0"}]}
+{"schema":"olm.channel","package":"multi","name":"old","entries":[{"name":"multi.v1.0.0"}]}
+{"schema":"olm.bundle","package":"multi","name":"multi.v1.0.0","image":"quay.io/x/multi:1.0.0","properties":[{"type":"olm.package","value":{"packageName":"multi","version":"1.0.0"}},{"type":"olm.package.required","value":{"packageName":"shared","versionRange":">=1.0.0"}},{"type":"olm.package.required","value":{"packageName":"legacy","versionRange":">=1.0.0"}}]}
+{"schema":"olm.bundle","package":"multi","name":"multi.v2.0.0","image":"quay.io/x/multi:2.0.0","properties":[{"type":"olm.package","value":{"packageName":"multi","version":"2.0.0"}},{"type":"olm.package.required","value":{"packageName":"shared","versionRange":">=1.0.0"}}]}
+`
+
+func hintSetup(t *testing.T) *catalog.Loader {
+	return setup(t, map[string]string{
+		"multi":  multiChannel,
+		"shared": pkg("shared", "stable", "1.0.0", ""),
+		"legacy": pkg("legacy", "stable", "1.0.0", ""),
+	})
+}
+
+func findingFor(r *Result, requirementPrefix string) *Finding {
+	for i := range r.Findings {
+		if strings.HasPrefix(r.Findings[i].Requirement, requirementPrefix) {
+			return &r.Findings[i]
+		}
+	}
+	return nil
+}
+
+func TestHintForPackageListedWithoutChannels(t *testing.T) {
+	r, err := Check(context.Background(), hintSetup(t), cfg("multi"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := findingFor(r, "package legacy")
+	if legacy == nil || legacy.Bundle != "multi.v1.0.0" || !strings.Contains(legacy.Hint, "listed without channels") || !strings.Contains(legacy.Hint, "only in old") {
+		t.Fatalf("expected a hint on the legacy requirement from the old-channel head, got %+v", legacy)
+	}
+	// "shared" is also needed by the default-channel head, so it must be
+	// reported against that bundle without a hint.
+	shared := findingFor(r, "package shared")
+	if shared == nil || shared.Bundle != "multi.v2.0.0" || shared.Hint != "" {
+		t.Fatalf("expected the shared requirement reported on multi.v2.0.0 with no hint, got %+v", shared)
+	}
+}
+
+func TestNoHintWhenChannelListed(t *testing.T) {
+	op := isc.Operator{Catalog: catRef, IncludeConfig: isc.IncludeConfig{Packages: []isc.IncludePackage{{
+		Name: "multi", Channels: []isc.IncludeChannel{{Name: "stable"}, {Name: "old"}},
+	}}}}
+	r, err := Check(context.Background(), hintSetup(t), []*isc.ImageSetConfiguration{{Path: "t.yaml", Mirror: isc.Mirror{Operators: []isc.Operator{op}}}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range r.Findings {
+		if f.Hint != "" {
+			t.Fatalf("no hint expected when the channel is listed explicitly, got %+v", f)
+		}
+	}
+	if findingFor(r, "package legacy") == nil {
+		t.Fatal("legacy requirement should still be reported")
+	}
+}

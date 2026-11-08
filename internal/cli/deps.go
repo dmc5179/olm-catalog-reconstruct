@@ -147,6 +147,9 @@ func printDeps(w io.Writer, res *deps.Result, additionsYAML []byte, additionsTo 
 			if f.Source != "" {
 				fmt.Fprintf(w, "      note: %s\n", f.Source)
 			}
+			if f.Hint != "" {
+				fmt.Fprintf(w, "      hint: %s\n", f.Hint)
+			}
 			if f.Resolution != "" {
 				fmt.Fprintf(w, "      -> %s\n", f.Resolution)
 			}

@@ -72,6 +72,9 @@ Things that commonly surprise people:
 
 - A package listed with no channels mirrors the head of **every** channel, including old
   ones, and their dependencies (for example old mta-operator heads need rhsso-operator).
+  When a dependency comes only from such a bundle (not the default channel or a channel
+  you named), the finding carries a `hint:` saying so; listing just the channels you need
+  removes both the bundle and the dependency.
 - A range can select old bundles whose dependencies no longer exist in the index (for
   example mtc-operator 1.8.0–1.8.4 need OADP < 1.5, but the v4.20 index only has OADP
   1.5.x). When a newer mirrored bundle in the same channel skips them (`skips` or

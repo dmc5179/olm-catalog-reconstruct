@@ -51,6 +51,9 @@ type Finding struct {
 	Have        []string `json:"have,omitempty"`
 	// Via is set when the requiring bundle was itself added to satisfy another dependency.
 	Via string `json:"via,omitempty"`
+	// Hint explains why the requiring bundle is mirrored when that is likely
+	// unintended (its package was listed without channels).
+	Hint string `json:"hint,omitempty"`
 }
 
 // Result is the outcome of a dependency check.
@@ -187,8 +190,9 @@ func indexCatalog(c *catalog.Catalog) (*catIndex, error) {
 }
 
 type selection struct {
-	bi  *bundleInfo
-	via string // "" when selected by the user's configuration
+	bi   *bundleInfo
+	via  string // "" when selected by the user's configuration
+	hint string // why a config-selected bundle is mirrored at all, when that is surprising
 }
 
 type checker struct {
@@ -247,6 +251,23 @@ func Check(ctx context.Context, loader *catalog.Loader, configs []*isc.ImageSetC
 			}
 		}
 	}
+	// Check bundles from channels the user evidently wants first, so a
+	// requirement shared with them is reported (and fixed) without a hint, and
+	// hints only remain on requirements that come solely from bundles mirrored
+	// because a package was listed without channels.
+	scope := newChannelScope(configs)
+	for _, s := range c.queue {
+		s.hint = c.hint(s, scope)
+	}
+	slices.SortStableFunc(c.queue, func(a, b *selection) int {
+		switch {
+		case a.hint == "" && b.hint != "":
+			return -1
+		case a.hint != "" && b.hint == "":
+			return 1
+		}
+		return 0
+	})
 	for len(c.queue) > 0 {
 		s := c.queue[0]
 		c.queue = c.queue[1:]
@@ -313,7 +334,7 @@ func (c *checker) gvkSatisfied(g gvk) bool {
 }
 
 func (c *checker) record(f Finding, s *selection) {
-	f.Catalog, f.Package, f.Bundle, f.Via = s.bi.cat, s.bi.b.Package, s.bi.b.Name, s.via
+	f.Catalog, f.Package, f.Bundle, f.Via, f.Hint = s.bi.cat, s.bi.b.Package, s.bi.b.Name, s.via, s.hint
 	key := f.Status + "|" + f.Kind + "|" + f.Package + "|" + f.Requirement
 	if c.seen[key] {
 		return
