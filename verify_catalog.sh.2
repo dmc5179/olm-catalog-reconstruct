@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+# Strict Error Handling & Best Practices
+# ==============================================================================
+set -euo pipefail
+
+# ==============================================================================
+# Helper Functions
+# ==============================================================================
+error_exit() {
+    local message="$1"
+    echo "ERROR: ${message}" >&2
+    exit 1
+}
+
+log_info() {
+    local message="$1"
+    echo "INFO: ${message}"
+}
+
+# Translates an image URI if a source match is found in the IDMS mirror table
+apply_idms_mirroring() {
+    local original_image="$1"
+    
+    # Read the mapping table line-by-line: "source|mirror"
+    while IFS="|" read -r source mirror; do
+        if [[ -z "${source}" ]]; then continue; fi
+        
+        # Check if the image string starts with the IDMS source prefix
+        if [[ "${original_image}" == "${source}"* ]]; then
+            # Replace the source prefix match with the corresponding mirror target string
+            local mirrored_image="${original_image/${source}/${mirror}}"
+            echo "${mirrored_image}"
+            return 0
+        fi
+    done < "${IDMS_MAP_FILE}"
+    
+    # If no IDMS rule intercepted the repository registry domain, return the original
+    echo "${original_image}"
+}
+
+verify_image_exists() {
+    local raw_image="$1"
+    
+    # Dynamically compute the registry layout destination based on IDMS translation tables
+    local target_image
+    target_image=$(apply_idms_mirroring "${raw_image}")
+    
+    if [[ "${raw_image}" != "${target_image}" ]]; then
+        echo -n "🔄 [IDMS Redirect: ${target_image}] ... "
+    fi
+
+    # Skopeo inspect queries remote metadata architectures cleanly without downloading image layers
+    if skopeo inspect --raw "docker://${target_image}" > /dev/null 2>&1; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# ==============================================================================
+# Input Validation & Argument Parsing
+# ==============================================================================
+if [[ $# -ne 2 ]]; then
+    error_exit "Usage: $0 <path_to_catalog.json> <path_to_idms.yaml>"
+fi
+
+CATALOG_FILE="$1"
+IDMS_FILE="$2"
+
+if [[ ! -f "${CATALOG_FILE}" ]]; then
+    error_exit "Catalog file not found: ${CATALOG_FILE}"
+fi
+
+if [[ ! -f "${IDMS_FILE}" ]]; then
+    error_exit "IDMS mirror configuration file not found: ${IDMS_FILE}"
+fi
+
+# Create a secure isolated workspace for temporary storage tables
+TEMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${TEMP_DIR}"' EXIT
+
+RAW_OUTPUT_JSON="${TEMP_DIR}/output.json"
+IDMS_MAP_FILE="${TEMP_DIR}/idms_mappings.txt"
+echo '{}' > "${RAW_OUTPUT_JSON}"
+
+# ==============================================================================
+# Process and Ingest IDMS Layout Mappings
+# ==============================================================================
+log_info "Ingesting IDMS file rules from ${IDMS_FILE}..."
+
+# Extract source-to-mirror mappings into a flat pipe-delimited text layout using yq
+# Captures: "source_string|mirror_string"
+yq e '.spec.imageDigestMirrors[] | .source + "|" + .mirrors[0]' "${IDMS_FILE}" > "${IDMS_MAP_FILE}"
+
+# ==============================================================================
+# Main Processing Logic
+# ==============================================================================
+log_info "Parsing channels from OLM catalog..."
+
+# Extract all unique channel names from the catalog
+mapfile -t CHANNELS < <(jq -r 'select(.schema == "olm.channel") | .name' "${CATALOG_FILE}")
+
+if [[ ${#CHANNELS[@]} -eq 0 ]]; then
+    error_exit "No channels found in the provided catalog file."
+fi
+
+# Iterate over each found channel track
+for channel in "${CHANNELS[@]}"; do
+    log_info "----------------=================================="
+    log_info "Processing Channel: ${channel}"
+    log_info "----------------=================================="
+    
+    local versions_added_for_channel=0
+
+    # Get all entries (versions) associated with the current loop channel
+    mapfile -t BUNDLE_VERSIONS < <(jq -r --arg chan "${channel}" 'select(.schema == "olm.channel" and .name == $chan) | .entries[].name' "${CATALOG_FILE}")
+    
+    for version in "${BUNDLE_VERSIONS[@]}"; do
+        log_info "Validating Operator Version: ${version}"
+        
+        # Extract related images for this specific bundle version
+        mapfile -t RELATED_IMAGES < <(jq -r --arg ver "${version}" 'select(.schema == "olm.bundle" and .name == $ver) | .relatedImages[].image' "${CATALOG_FILE}")
+        
+        # Include the base bundle image path if specified in the schema top-level
+        BASE_IMAGE="$(jq -r --arg ver "${version}" 'select(.schema == "olm.bundle" and .name == $ver) | .image' "${CATALOG_FILE}")"
+        if [[ -n "${BASE_IMAGE}" && "${BASE_IMAGE}" != "null" ]]; then
+            RELATED_IMAGES+=("${BASE_IMAGE}")
+        fi
+
+        if [[ ${#RELATED_IMAGES[@]} -eq 0 ]]; then
+            echo "  ⚠️  No container images found for ${version}. Skipping."
+            continue
+        fi
+
+        VERSION_VALID=true
+        
+        # Check all collected images against mapped container registries
+        for img in "${RELATED_IMAGES[@]}"; do
+            echo -n "  🔎 Evaluating image: ${img} ... "
+            if verify_image_exists "${img}"; then
+                echo "✅ EXISTS"
+            else
+                echo "❌ NOT FOUND"
+                VERSION_VALID=false
+                break # Fail fast if any single image registry dependencies are broken
+            fi
+        done
+        
+        # If all associated images are validated, append to our tracking ledger object
+        if [[ "${VERSION_VALID}" == "true" ]]; then
+            log_info "  🎉 Version ${version} is completely verified! Adding to output channel stack."
+            
+            # Append standard config mapping structure entries
+            jq --arg chan "${channel}" --arg ver "${version}" \
+               '.[$chan] += [{"name": $ver}]' "${RAW_OUTPUT_JSON}" > "${RAW_OUTPUT_JSON}.tmp"
+            mv "${RAW_OUTPUT_JSON}.tmp" "${RAW_OUTPUT_JSON}"
+            
+            ((versions_added_for_channel++))
+        else
+            echo "  ⛔ Version ${version} validation failed due to unresolvable registry states. Omitted."
+        fi
+    done
+
+    # Reconstruct exact original structural metadata contexts for successfully retained channels
+    if [[ ${versions_added_for_channel} -gt 0 ]]; then
+        PACKAGE_NAME="$(jq -r --arg chan "${channel}" 'select(.schema == "olm.channel" and .name == $chan) | .package' "${CATALOG_FILE}")"
+        SCHEMA_TYPE="$(jq -r --arg chan "${channel}" 'select(.schema == "olm.channel" and .name == $chan) | .schema' "${CATALOG_FILE}")"
+        
+        jq --arg chan "${channel}" --arg pkg "${PACKAGE_NAME}" --arg sch "${SCHEMA_TYPE}" \
+           '.[$chan] = {"entries": .[$chan], "name": $chan, "package": $pkg, "schema": $sch}' "${RAW_OUTPUT_JSON}" > "${RAW_OUTPUT_JSON}.tmp"
+        mv "${RAW_OUTPUT_JSON}.tmp" "${RAW_OUTPUT_JSON}"
+    else
+        log_info "  🗑️  No valid versions found under channel '${channel}' post-mirror processing. Dropping channel entirely."
+    fi
+done
+
+# ==============================================================================
+# Save and finalize configuration output files
+# ==============================================================================
+CONFIG_OUTPUT="config.json"
+
+# Unpack our indexed key map array straight back into a clean newline-delimited stream format
+jq -c '.[]' "${RAW_OUTPUT_JSON}" > "${CONFIG_OUTPUT}"
+
+log_info "=================================================="
+log_info "Process Finished Successfully! Mapped results written to: ${CONFIG_OUTPUT}"
+log_info "=================================================="
