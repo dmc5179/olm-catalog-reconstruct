@@ -1,0 +1,5 @@
+bin/
+replay-out/
+# Extracted catalog snapshots (large, reproducible from the index image)
+configs/
+configs-rebuild/
